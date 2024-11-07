@@ -13,9 +13,18 @@ const Home = () => {
     const [result, setResult] = useState(null);
     const [history, setHistory] = useState([]);
     const [isLoading, setIsLoading] = useState(false);
-    const [taskStatus, setTaskStatus] = useState(null); // New state for task status
-    const [progressPercent, setProgressPercent] = useState(null); // New state for progress percentage
+    const [taskStatus, setTaskStatus] = useState(null);
+    const [progressPercent, setProgressPercent] = useState(null);
+    const [taskId, setTaskId] = useState(null);
+    const [isUserCanceled, setIsUserCanceled] = useState(false);
     const navigate = useNavigate();
+
+    useEffect(() => {
+        // Reset `isUserCanceled` when a new task ID is set
+        if (taskId) {
+            setIsUserCanceled(false);
+        }
+    }, [taskId]);
 
     const handleLogout = async () => {
         try {
@@ -34,16 +43,39 @@ const Home = () => {
         }
     };
 
+    const handleCancelTask = async () => {
+        const token = localStorage.getItem('access_token');
+        if (!taskId) {
+            alert("No task is currently running.");
+            return;
+        }
+        try {
+            await api.post(`/cancel_task/${taskId}/`, {}, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            setIsUserCanceled(true);
+            setTaskId(null);
+            alert("Task was successfully canceled.");
+        } catch (error) {
+            console.error("Error canceling task:", error);
+            alert("An error occurred while attempting to cancel the task.");
+        }
+    };
+
     const handleIntegration = async () => {
         const token = localStorage.getItem('access_token');
         if (!functionInput || lowerBound >= upperBound) {
             alert("Please ensure the function is valid and the lower bound is less than the upper bound.");
             return;
         }
-    
+
+        // Clear any previous task info and reset state
         setIsLoading(true);
-        setTaskStatus("Starting..."); // Set initial task status
-        let taskId = null;
+        setTaskStatus("Starting...");
+        setProgressPercent(null);
+        setResult(null);
+        setTaskId(null);
+
         try {
             const response = await api.post('', {
                 function: functionInput,
@@ -55,25 +87,31 @@ const Home = () => {
                     'Content-Type': 'application/json',
                 }
             });
-    
-            taskId = response.data.task_id;
-            alert(`Task started with ID: ${taskId}`);
-            
+
+            setTaskId(response.data.task_id);
+            alert(`Task started with ID: ${response.data.task_id}`);
+
             const intervalId = setInterval(async () => {
                 try {
-                    const statusResponse = await api.get(`/task-status/${taskId}/`, {
-                        headers: {
-                            'Authorization': `Bearer ${token}`,
-                        }
+                    const statusResponse = await api.get(`/task-status/${response.data.task_id}/`, {
+                        headers: { 'Authorization': `Bearer ${token}` }
                     });
-    
-                    setTaskStatus(statusResponse.data.status); // Update task status
-                    setProgressPercent(statusResponse.data.percent_complete || null); // Update progress percent if available
-    
+
+                    setTaskStatus(statusResponse.data.status);
+                    setProgressPercent(statusResponse.data.percent_complete || null);
+
                     if (statusResponse.data.status === 'SUCCESS') {
                         clearInterval(intervalId);
-                        setResult(statusResponse.data.result);
-                        alert(`Estimated Area: ${statusResponse.data.result.estimated_area}`);
+                        if (isUserCanceled) {
+                            setTaskStatus("Canceled");
+                            alert("Task was canceled by the user.");
+                        } else if (statusResponse.data.result) {
+                            setResult(statusResponse.data.result);
+                            alert(`Estimated Area: ${statusResponse.data.result.estimated_area}`);
+                        } else {
+                            alert("Task completed but no result was returned.");
+                            setTaskStatus("No result available.");
+                        }
                     } else if (statusResponse.data.status === 'FAILURE') {
                         clearInterval(intervalId);
                         setTaskStatus('Failed to complete the task.');
@@ -84,6 +122,9 @@ const Home = () => {
                     alert("Error fetching task status.");
                 }
             }, 2000);
+
+            // Cleanup function to clear the interval if component unmounts or task finishes
+            return () => clearInterval(intervalId);
         } catch (error) {
             console.error("Error during integration:", error);
             alert("An error occurred during integration. Please check your function and bounds.");
@@ -135,8 +176,13 @@ const Home = () => {
                     {progressPercent !== null && <p>Progress: {progressPercent}%</p>}
                 </div>
             )}
+            {taskStatus && taskStatus !== 'SUCCESS' && taskStatus !== 'FAILURE' && (
+                <button onClick={handleCancelTask} disabled={!taskId || isLoading || isUserCanceled}>
+                    Cancel Task
+                </button>
+            )}
 
-            {result && (
+            {result && !isUserCanceled && (
                 <div className="result-card">
                     <h3>Results:</h3>
                     <p>Function: {result.function}, a={result.lower_bound}, b={result.upper_bound}</p>
